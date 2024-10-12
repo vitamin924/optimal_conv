@@ -221,48 +221,41 @@ func evalRMFC_BL_img(cont *context, ct_input *ckks.Ciphertext, ker_fc []float64,
 // in_wid must be Po2 (also include padding),
 // include kernel preparation
 // norm = 2 : in&out batches are (1,0,2,0,3,0,...)
-func evalConv_BN(cont *context, ct_input *ckks.Ciphertext, ker_in, bn_a, bn_b []float64, in_wid, ker_wid, real_ib, real_ob, norm int, out_scale float64, trans bool) (ct_res *ckks.Ciphertext) {
+func evalConv_LN(cont *context, ct_input *ckks.Ciphertext, ker_in, ln_a, ln_b []float64, in_wid, ker_wid, real_ib, real_ob, norm int, out_scale float64, trans bool) (ct_res *ckks.Ciphertext) {
 	max_batch := cont.N / (in_wid * in_wid)
 
-	// fmt.Println()
-	// fmt.Println("===============  (KER) PREPARATION  ===============")
-	// fmt.Println()
-	start := time.Now()
-	pl_ker := prep_Ker(cont.params, cont.encoder, ker_in, bn_a, in_wid, ker_wid, real_ib, real_ob, norm, cont.ECD_LV, 0, trans)
-	// fmt.Printf("for prep_ker %s \n", time.Since(start))
-	b_coeffs := make([]float64, cont.N)
-	for i := range bn_b {
-		for j := 0; j < in_wid*in_wid; j++ {
-			b_coeffs[norm*i+j*max_batch] = bn_b[i]
-		}
-	}
-	// scale_exp := ct_input.Scale * cont.params.Scale() * float64(max_batch/norm)
-	pl_bn_b := ckks.NewPlaintext(cont.params, 0, out_scale)
-	// pl_bn_b := ckks.NewPlaintext(cont.params, cont.ECD_LV, scale_exp) // contain plaintext values
-	cont.encoder.EncodeCoeffs(b_coeffs, pl_bn_b)
-	cont.encoder.ToNTT(pl_bn_b)
-	fmt.Printf("Plaintext (kernel) preparation, Done in %s \n", time.Since(start))
+    start := time.Now()
+    pl_ker := prep_Ker(cont.params, cont.encoder, ker_in, ln_a, in_wid, ker_wid, real_ib, real_ob, norm, cont.ECD_LV, 0, trans)
 
-	// fmt.Println()
-	// fmt.Println("===============  EVALUATION  ===============")
-	// fmt.Println()
+    // 准备层归一化的偏置
+    b_coeffs := make([]float64, cont.N)
+    for i := range ln_b {
+        for j := 0; j < max_batch; j++ {
+            // 将 ln_b 的值填充到每个样本
+            b_coeffs[norm*i+j] = ln_b[i]
+        }
+    }
 
-	start = time.Now()
-	ct_res = conv_then_pack(cont.params, cont.pack_evaluator, ct_input, pl_ker, cont.pl_idx, max_batch, norm, cont.ECD_LV, out_scale)
-	if (pl_bn_b.Scale != ct_res.Scale) || (ct_res.Level() != 0) {
-		fmt.Println("plain scale: ", pl_bn_b.Scale)
-		fmt.Println("ctxt scale: ", ct_res.Scale)
-		fmt.Println("ctxt lv: ", ct_res.Level())
-		panic("LV or scale after conv then pack, inconsistent")
-	}
-	cont.evaluator.Add(ct_res, pl_bn_b, ct_res) // for Batch Normalization (BN)
+    pl_ln_b := ckks.NewPlaintext(cont.params, 0, out_scale)
+    cont.encoder.EncodeCoeffs(b_coeffs, pl_ln_b)
+    cont.encoder.ToNTT(pl_ln_b)
+    fmt.Printf("Plaintext (kernel) preparation, Done in %s \n", time.Since(start))
 
-	fmt.Printf("Conv (with BN) Done in %s \n", time.Since(start))
+    start = time.Now()
+    ct_res = conv_then_pack(cont.params, cont.pack_evaluator, ct_input, pl_ker, cont.pl_idx, max_batch, norm, cont.ECD_LV, out_scale)
+    if (pl_ln_b.Scale != ct_res.Scale) || (ct_res.Level() != 0) {
+        fmt.Println("plain scale: ", pl_ln_b.Scale)
+        fmt.Println("ctxt scale: ", ct_res.Scale)
+        fmt.Println("ctxt lv: ", ct_res.Level())
+        panic("LV or scale after conv then pack, inconsistent")
+    }
+    cont.evaluator.Add(ct_res, pl_ln_b, ct_res) // for Layer Normalization (LN)
 
-	return ct_res
+    fmt.Printf("Conv (with LN) Done in %s \n", time.Since(start))
+
+    return ct_res
 }
-
-// Eval Conv, BN, relu with Boot
+// Eval Conv, LN, relu with Boot
 // in_wid must be Po2 (also include padding)
 // stride = true: apply [1,2,2,1] stride; false: [1,1,1,1]
 // pack_pos: position to pack (0,1,2,3): only for strided case
